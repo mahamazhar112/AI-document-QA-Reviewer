@@ -1,0 +1,6 @@
+pymupdf
+sentence-transformers
+chromadb
+pydantic
+python-dotenv
+groq
