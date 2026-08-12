@@ -16,7 +16,7 @@ CHROMA_PATH = "./chroma_db"
 COLLECTION_NAME = "qa_reference_docs"
 TOP_K = 4
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=os.getenv("GROQ_API_KEY", "dummy-key-for-ci"))
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = chroma_client.get_collection(COLLECTION_NAME)
