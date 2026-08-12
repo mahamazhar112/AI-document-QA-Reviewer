@@ -11,24 +11,35 @@ from app.tools import handle_tool_call
 
 load_dotenv()
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=os.getenv("GROQ_API_KEY", "dummy-key-for-ci"))
 
-CLASSIFY_PROMPT = """Classify the user's message into exactly one category:
+CLASSIFY_PROMPT = """Classify the user's latest message into exactly one category, using the recent conversation for context.
 
 - "review": user wants a draft reviewed/checked against reference material, or is naming/uploading a document to review
-- "tool": user is asking about a previous review, an issue, a source, or a rule (e.g. "why was issue 2 flagged", "show me the source", "find the rule about security wording")
-- "chat": greetings, small talk, or anything not covered above
+- "tool": user is asking about a previous review, an issue, a source, a rule, or a claim -- including short/vague follow-ups like "what about that?", "and the second one?", "show me more" that continue a topic already discussed in the recent conversation below
+- "chat": greetings, small talk, or anything genuinely unrelated to review/tool activity, with no relevant recent context to continue
 
-Message: "{message}"
+Recent conversation:
+{history}
+
+Latest message: "{message}"
 
 Respond with ONLY valid JSON, no other text:
 {{"path": "review" or "tool" or "chat"}}"""
 
 
-def classify_intent(message: str) -> str:
+def format_recent_history(history: list[dict], limit: int = 4) -> str:
+    recent = [m for m in history if m["role"] in ("user", "assistant")][-limit:]
+    if not recent:
+        return "(no prior messages)"
+    return "\n".join(f"{m['role']}: {m['content'][:200]}" for m in recent)
+
+
+def classify_intent(message: str, history: list[dict]) -> str:
+    history_text = format_recent_history(history)
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": CLASSIFY_PROMPT.format(message=message)}],
+        messages=[{"role": "user", "content": CLASSIFY_PROMPT.format(history=history_text, message=message)}],
         temperature=0,
     )
     raw = response.choices[0].message.content.strip()
@@ -59,7 +70,8 @@ def normal_reply(session_id: str, message: str) -> str:
 
 def route_message(session_id: str, message: str, document_path: str | None = None) -> dict:
     memory.add_message(session_id, "user", message)
-    path = classify_intent(message)
+    history = memory.get_history(session_id)
+    path = classify_intent(message, history)
 
     if path == "review" and document_path:
         result = review_draft(document_path)
@@ -76,7 +88,7 @@ def route_message(session_id: str, message: str, document_path: str | None = Non
 
     elif path == "tool":
         last_review_id = memory.get_last_review_id(session_id)
-        reply = handle_tool_call(session_id, message, last_review_id)
+        reply = handle_tool_call(session_id, message, last_review_id, history)
         reply["path"] = "tool"
 
     else:
