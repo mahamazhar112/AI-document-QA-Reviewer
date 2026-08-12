@@ -1,6 +1,6 @@
 import json
 import os
-from pathlib import Path
+from collections import defaultdict
 
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -14,7 +14,7 @@ load_dotenv()
 
 CHROMA_PATH = "./chroma_db"
 COLLECTION_NAME = "qa_reference_docs"
-TOP_K = 5
+TOP_K = 4
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -38,8 +38,17 @@ class ReviewResult(BaseModel):
     summary: str
 
 
-def retrieve_context(draft_text: str, top_k: int = TOP_K) -> list[dict]:
-    query_embedding = embed_model.encode([draft_text]).tolist()
+def group_by_main_heading(sections) -> dict:
+    grouped = defaultdict(list)
+    for s in sections:
+        if s.main_heading.strip().lower() == "contents":
+            continue
+        grouped[s.main_heading].append(s)
+    return grouped
+
+
+def retrieve_context(query_text: str, top_k: int = TOP_K) -> list[dict]:
+    query_embedding = embed_model.encode([query_text]).tolist()
     results = collection.query(query_embeddings=query_embedding, n_results=top_k)
 
     context = []
@@ -48,28 +57,31 @@ def retrieve_context(draft_text: str, top_k: int = TOP_K) -> list[dict]:
     return context
 
 
-def build_prompt(draft_text: str, context: list[dict]) -> str:
+def build_prompt(main_heading: str, section_text: str, context: list[dict]) -> str:
     context_block = "\n\n".join(
         f"[{c['source_file']} - {c['heading']}]\n{c['text']}" for c in context
     )
 
-    return f"""You are a QA reviewer checking a content draft against approved reference material.
+    return f"""You are a QA reviewer checking one section of a content draft against approved reference material.
 
 REFERENCE MATERIAL:
 {context_block}
 
-DRAFT TO REVIEW:
-{draft_text}
+DRAFT SECTION: "{main_heading}"
+{section_text}
 
-Only flag a claim if it is clearly contradicted or unsupported by the reference material above.
-Do not flag everything - correct statements should not be flagged.
+Rules:
+- Only flag a claim if it is clearly contradicted or unsupported by the reference material above.
+- Do not flag correct statements.
+- Ignore sentences that are meta-commentary about the draft itself (e.g. "other sections of this draft...", "the copy is intentionally written as...", "some statements are narrow and factual while others..."). These are not product claims and must never be flagged.
+- Only evaluate actual claims about the product, its features, plans, security, or behavior.
+- If the same underlying problem appears more than once in this section, report it once.
+- If nothing is wrong, return an empty issues list.
 
-Respond with ONLY valid JSON in this exact shape, no other text:
+Respond with ONLY valid JSON, no other text:
 {{
-  "status": "pass" or "needs_revision",
   "issues": [
     {{
-      "issue_id": "issue_1",
       "type": "factual_error" or "unsupported_claim" or "writing_violation",
       "severity": "high" or "medium" or "low",
       "flagged_text": "the exact sentence from the draft",
@@ -77,8 +89,7 @@ Respond with ONLY valid JSON in this exact shape, no other text:
       "source_file": "which reference file supports this",
       "source_section": "which section in that file"
     }}
-  ],
-  "summary": "short overall summary"
+  ]
 }}"""
 
 
@@ -100,21 +111,51 @@ def call_llm_with_retry(prompt: str, max_retries: int = 2) -> dict:
             continue
 
 
-def review_draft(draft_text: str) -> ReviewResult:
-    context = retrieve_context(draft_text)
-    prompt = build_prompt(draft_text, context)
+def review_main_section(main_heading: str, sub_sections: list, issue_counter: list[int]) -> list[dict]:
+    combined_text = "\n\n".join(
+        f"{s.sub_heading}: {s.text}" if s.sub_heading else s.text
+        for s in sub_sections
+    )
+
+    context = retrieve_context(f"{main_heading}: {combined_text}")
+    prompt = build_prompt(main_heading, combined_text, context)
     raw_result = call_llm_with_retry(prompt)
 
+    issues = []
+    for raw_issue in raw_result.get("issues", []):
+        issue_counter[0] += 1
+        raw_issue["issue_id"] = f"issue_{issue_counter[0]}"
+        issues.append(raw_issue)
+    return issues
+
+
+def review_draft(draft_path: str) -> ReviewResult:
+    sections = parse_pdf_into_sections(draft_path)
+    grouped = group_by_main_heading(sections)
+
+    all_issues = []
+    issue_counter = [0]
+
+    for main_heading, sub_sections in grouped.items():
+        section_issues = review_main_section(main_heading, sub_sections, issue_counter)
+        all_issues.extend(section_issues)
+
     try:
-        return ReviewResult(**raw_result)
+        validated_issues = [Issue(**issue) for issue in all_issues]
     except ValidationError as e:
-        raise ValueError(f"LLM returned malformed review JSON: {e}")
+        raise ValueError(f"LLM returned malformed issue JSON: {e}")
+
+    status = "needs_revision" if validated_issues else "pass"
+    summary = (
+        f"Found {len(validated_issues)} issue(s) across {len(grouped)} sections."
+        if validated_issues
+        else "No issues found. Draft is consistent with reference material."
+    )
+
+    return ReviewResult(status=status, issues=validated_issues, summary=summary)
 
 
 if __name__ == "__main__":
-    draft_path = "data/drafts_to_review/homepage_and_product_overview.pdf"
-    sections = parse_pdf_into_sections(draft_path)
-    full_draft_text = "\n\n".join(f"{s.main_heading} - {s.sub_heading}: {s.text}" for s in sections)
-
-    result = review_draft(full_draft_text)
+    result = review_draft("data/drafts_to_review/homepage_and_product_overview.pdf")
     print(result.model_dump_json(indent=2))
+    print(f"\nTotal issues found: {len(result.issues)}")

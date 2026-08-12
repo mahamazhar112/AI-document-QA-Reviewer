@@ -4,3 +4,5 @@ chromadb
 pydantic
 python-dotenv
 groq
+fastapi
+uvicorn
