@@ -19,7 +19,15 @@ TOP_K = 4
 client = Groq(api_key=os.getenv("GROQ_API_KEY", "dummy-key-for-ci"))
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-collection = chroma_client.get_collection(COLLECTION_NAME)
+
+_collection = None
+
+
+def get_collection():
+    global _collection
+    if _collection is None:
+        _collection = chroma_client.get_collection(COLLECTION_NAME)
+    return _collection
 
 
 class Issue(BaseModel):
@@ -49,7 +57,7 @@ def group_by_main_heading(sections) -> dict:
 
 def retrieve_context(query_text: str, top_k: int = TOP_K) -> list[dict]:
     query_embedding = embed_model.encode([query_text]).tolist()
-    results = collection.query(query_embeddings=query_embedding, n_results=top_k)
+    results = get_collection().query(query_embeddings=query_embedding, n_results=top_k)
 
     context = []
     for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
