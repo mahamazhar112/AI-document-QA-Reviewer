@@ -6,3 +6,5 @@ python-dotenv
 groq
 fastapi
 uvicorn
+pytest
+pytest-mock

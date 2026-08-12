@@ -111,7 +111,7 @@ def call_llm_with_retry(prompt: str, max_retries: int = 2) -> dict:
             continue
 
 
-def review_main_section(main_heading: str, sub_sections: list, issue_counter: list[int]) -> list[dict]:
+def review_main_section(main_heading: str, sub_sections: list) -> list[dict]:
     combined_text = "\n\n".join(
         f"{s.sub_heading}: {s.text}" if s.sub_heading else s.text
         for s in sub_sections
@@ -121,12 +121,29 @@ def review_main_section(main_heading: str, sub_sections: list, issue_counter: li
     prompt = build_prompt(main_heading, combined_text, context)
     raw_result = call_llm_with_retry(prompt)
 
-    issues = []
-    for raw_issue in raw_result.get("issues", []):
-        issue_counter[0] += 1
-        raw_issue["issue_id"] = f"issue_{issue_counter[0]}"
-        issues.append(raw_issue)
-    return issues
+    return raw_result.get("issues", [])
+
+
+def normalize_text(text: str) -> str:
+    return " ".join(text.lower().strip().split())
+
+
+def deduplicate_issues(raw_issues: list[dict]) -> list[dict]:
+    """
+    Multiple retrieved reference chunks can independently confirm the same
+    problem, which causes the LLM to report the same flagged sentence more
+    than once (each time citing a different source). We keep only the first
+    occurrence of each distinct flagged_text, so one real problem = one
+    reported issue.
+    """
+    seen = set()
+    deduped = []
+    for issue in raw_issues:
+        key = normalize_text(issue.get("flagged_text", ""))
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(issue)
+    return deduped
 
 
 def review_draft(draft_path: str) -> ReviewResult:
@@ -134,14 +151,16 @@ def review_draft(draft_path: str) -> ReviewResult:
     grouped = group_by_main_heading(sections)
 
     all_issues = []
-    issue_counter = [0]
-
     for main_heading, sub_sections in grouped.items():
-        section_issues = review_main_section(main_heading, sub_sections, issue_counter)
-        all_issues.extend(section_issues)
+        all_issues.extend(review_main_section(main_heading, sub_sections))
+
+    deduped_issues = deduplicate_issues(all_issues)
+
+    for i, issue in enumerate(deduped_issues, start=1):
+        issue["issue_id"] = f"issue_{i}"
 
     try:
-        validated_issues = [Issue(**issue) for issue in all_issues]
+        validated_issues = [Issue(**issue) for issue in deduped_issues]
     except ValidationError as e:
         raise ValueError(f"LLM returned malformed issue JSON: {e}")
 
