@@ -38,7 +38,7 @@ def format_recent_history(history: list[dict], limit: int = 4) -> str:
 def classify_intent(message: str, history: list[dict]) -> str:
     history_text = format_recent_history(history)
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": CLASSIFY_PROMPT.format(history=history_text, message=message)}],
         temperature=0,
     )

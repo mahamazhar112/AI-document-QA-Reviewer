@@ -104,7 +104,7 @@ Respond with ONLY valid JSON, no other text:
 def call_llm_with_retry(prompt: str, max_retries: int = 2) -> dict:
     for attempt in range(max_retries + 1):
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )

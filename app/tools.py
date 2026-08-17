@@ -44,7 +44,7 @@ def classify_tool_call(message: str, history: list[dict] | None = None) -> dict:
     history_text = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in recent) or "(no prior messages)"
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": TOOL_CLASSIFY_PROMPT.format(history=history_text, message=message)}],
         temperature=0,
     )
